@@ -62,9 +62,9 @@ export function UsageChart({ title, data, color }: UsageChartProps) {
               fontSize: "12px",
             }}
             labelStyle={{ color: "#a1a1aa" }}
-            formatter={(value: number, name: string) => [
-              formatNumber(value),
-              name === "inputTokens" ? "Input" : "Output",
+            formatter={(value, name) => [
+              formatNumber(Number(value ?? 0)),
+              String(name) === "inputTokens" ? "Input" : "Output",
             ]}
             labelFormatter={(label) => {
               const [, m, d] = String(label).split("-").map(Number);

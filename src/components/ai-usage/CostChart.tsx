@@ -112,7 +112,7 @@ export function CostChart({ data }: CostChartProps) {
               fontSize: "12px",
             }}
             labelStyle={{ color: "#a1a1aa" }}
-            formatter={(value: number, name: string) => [`$${value.toFixed(2)}`, name]}
+            formatter={(value, name) => [`$${Number(value ?? 0).toFixed(2)}`, String(name)]}
             labelFormatter={(label, payload) => {
               const [, m, d] = String(label).split("-").map(Number);
               const isEst = payload?.[0]?.payload?.estimated;

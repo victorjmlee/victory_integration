@@ -188,7 +188,7 @@ export async function GET(request: NextRequest) {
 
     let totalTokens = 0;
     let totalCost = 0;
-    const dailyUsage = usageBuckets.map((bucket) => {
+    const dailyUsage: Array<{ date: string; inputTokens: number; outputTokens: number; totalTokens: number; cost: number; modelCosts: { model: string; cost: number }[]; estimated?: boolean }> = usageBuckets.map((bucket) => {
       const { inputTokens, outputTokens } = sumBucketTokens(bucket.results ?? []);
       const date = bucket.starting_at?.split("T")[0] ?? "";
       const costEntry = costMap.get(date);
