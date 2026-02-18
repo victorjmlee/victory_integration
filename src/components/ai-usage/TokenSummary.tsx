@@ -17,7 +17,7 @@ export function TokenSummary({ data, days = 30, totalCost }: TokenSummaryProps) 
   const today = data[data.length - 1];
   const yesterday = data.length > 1 ? data[data.length - 2] : null;
   const hasCost = (totalCost ?? 0) > 0;
-  const hasEstimate = data.some((d) => d.estimated);
+  const pendingDays = data.filter((d) => d.estimated).length;
 
   return (
     <div className={`grid grid-cols-2 gap-3 ${hasCost ? "sm:grid-cols-5" : "sm:grid-cols-4"}`}>
@@ -35,9 +35,9 @@ export function TokenSummary({ data, days = 30, totalCost }: TokenSummaryProps) 
       </div>
       {hasCost && (
         <div className="rounded-lg bg-zinc-800/50 px-3 py-2">
-          <p className="text-xs text-zinc-500">Cost ({days}d){hasEstimate ? "*" : ""}</p>
+          <p className="text-xs text-zinc-500">Cost ({days}d)</p>
           <p className="text-sm font-semibold text-yellow-400">${totalCost!.toFixed(2)}</p>
-          {hasEstimate && <p className="text-[10px] text-zinc-600">*includes estimate</p>}
+          {pendingDays > 0 && <p className="text-[10px] text-zinc-600">{pendingDays}d cost pending</p>}
         </div>
       )}
       <div className="rounded-lg bg-zinc-800/50 px-3 py-2">

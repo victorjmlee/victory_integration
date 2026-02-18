@@ -20,7 +20,7 @@ interface CostBucket {
 
 // Pricing per million tokens (USD)
 const MODEL_PRICING: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }> = {
-  "claude-opus-4-6": { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
+  "claude-opus-4-6": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
   "claude-opus-4": { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
   "claude-sonnet-4-6": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   "claude-sonnet-4-5": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
@@ -206,12 +206,13 @@ export async function GET(request: NextRequest) {
       return { date, inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, cost: actualCost, modelCosts };
     });
 
-    // Append dates that were missing from daily buckets but available in hourly data
+    // Append dates that were missing from daily buckets but available in hourly data.
+    // Only use cost_report data for cost (token-based estimates are unreliable with caching).
     for (const [date, agg] of Array.from(hourlyByDate.entries()).sort()) {
       if (agg.inputTokens === 0 && agg.outputTokens === 0) continue;
       const actualCost = costMap.get(date);
-      const cost = actualCost ?? agg.estimatedCost;
-      const modelCosts = buildModelCosts(agg.results, cost);
+      const cost = actualCost ?? 0;
+      const modelCosts = actualCost != null ? buildModelCosts(agg.results, actualCost) : [];
       totalTokens += agg.inputTokens + agg.outputTokens;
       totalCost += cost;
       dailyUsage.push({
