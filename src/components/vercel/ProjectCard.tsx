@@ -23,6 +23,9 @@ export function ProjectCard({ project }: ProjectCardProps) {
             </h3>
             <ExternalLink size={12} className="shrink-0 text-zinc-500" />
           </a>
+          {project.productionUrl && (
+            <p className="mt-1 truncate text-xs text-zinc-500">{project.productionUrl}</p>
+          )}
           {project.framework && (
             <p className="mt-1 text-xs text-zinc-400">{project.framework}</p>
           )}

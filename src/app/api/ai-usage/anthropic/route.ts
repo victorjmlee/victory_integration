@@ -96,8 +96,9 @@ export async function GET(request: NextRequest) {
 
     const endDate = endParam ? new Date(endParam) : new Date();
     const startDate = startParam ? new Date(startParam) : new Date(endDate.getTime() - 7 * 86400000);
-    // Add one day to end date since the API treats it as exclusive
-    const endDateExclusive = new Date(endDate.getTime() + 86400000);
+    // The API returns buckets where ending_at < our ending_at param (strictly before).
+    // Daily buckets end 1 day after they start, so we need +2 days to include the end date.
+    const endDateExclusive = new Date(endDate.getTime() + 2 * 86400000);
 
     const formatDate = (d: Date) => d.toISOString().split("T")[0];
     const todayStr = formatDate(new Date());
