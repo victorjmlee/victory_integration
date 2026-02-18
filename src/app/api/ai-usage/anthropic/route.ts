@@ -207,12 +207,12 @@ export async function GET(request: NextRequest) {
     });
 
     // Append dates that were missing from daily buckets but available in hourly data.
-    // Only use cost_report data for cost (token-based estimates are unreliable with caching).
+    // Use cost_report when available, otherwise estimate from token pricing.
     for (const [date, agg] of Array.from(hourlyByDate.entries()).sort()) {
       if (agg.inputTokens === 0 && agg.outputTokens === 0) continue;
       const actualCost = costMap.get(date);
-      const cost = actualCost ?? 0;
-      const modelCosts = actualCost != null ? buildModelCosts(agg.results, actualCost) : [];
+      const cost = actualCost ?? agg.estimatedCost;
+      const modelCosts = buildModelCosts(agg.results, cost);
       totalTokens += agg.inputTokens + agg.outputTokens;
       totalCost += cost;
       dailyUsage.push({

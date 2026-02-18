@@ -87,7 +87,7 @@ export function CostChart({ data }: CostChartProps) {
         <h3 className="text-sm font-semibold text-zinc-300">Daily Token Cost</h3>
         {hasEstimated && (
           <span className="rounded bg-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-400">
-            Recent days pending cost data
+            Recent days estimated from tokens
           </span>
         )}
       </div>
@@ -117,7 +117,7 @@ export function CostChart({ data }: CostChartProps) {
             labelFormatter={(label, payload) => {
               const [, m, d] = String(label).split("-").map(Number);
               const isEst = payload?.[0]?.payload?.estimated;
-              return `Date: ${m}/${d}${isEst ? " (cost pending)" : ""}`;
+              return `Date: ${m}/${d}${isEst ? " (estimated)" : ""}`;
             }}
           />
           <Legend wrapperStyle={{ fontSize: "11px" }} />
