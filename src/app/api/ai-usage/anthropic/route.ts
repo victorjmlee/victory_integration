@@ -24,7 +24,7 @@ const MODEL_PRICING: Record<string, { input: number; output: number; cacheRead: 
   "claude-opus-4": { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
   "claude-sonnet-4-5": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   "claude-sonnet-4": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
-  "claude-haiku-4-5": { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 },
+  "claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
   "claude-3-haiku": { input: 0.25, output: 1.25, cacheRead: 0.03, cacheWrite: 0.3 },
 };
 
@@ -149,21 +149,14 @@ export async function GET(request: NextRequest) {
 
     // Build cost map by date - no group_by so each bucket has one result with the total
     const costMap = new Map<string, number>();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const _debugCost: { buckets: number; rawAmounts: any[]; rawTotal: number; dividedTotal: number } = { buckets: 0, rawAmounts: [], rawTotal: 0, dividedTotal: 0 };
     if (costRes.ok) {
       const costData = await costRes.json();
       for (const bucket of (costData.data ?? []) as CostBucket[]) {
-        _debugCost.buckets++;
         const date = bucket.starting_at?.split("T")[0] ?? "";
         let dayCost = 0;
         for (const r of bucket.results ?? []) {
-          const raw = parseFloat(r.amount ?? "0");
-          _debugCost.rawAmounts.push({ date, raw_amount: r.amount, parsed: raw });
-          _debugCost.rawTotal += raw;
-          dayCost += raw / 100;
+          dayCost += parseFloat(r.amount ?? "0") / 100;
         }
-        _debugCost.dividedTotal += dayCost;
         costMap.set(date, (costMap.get(date) ?? 0) + dayCost);
       }
     }
@@ -234,7 +227,7 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    return NextResponse.json({ dailyUsage, totalTokens, totalCost, _debugCost });
+    return NextResponse.json({ dailyUsage, totalTokens, totalCost });
   } catch (err) {
     return NextResponse.json(
       { dailyUsage: [], totalTokens: 0, totalCost: 0, error: `Failed to fetch: ${(err as Error).message}` },
