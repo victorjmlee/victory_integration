@@ -6,6 +6,7 @@ import { PageShell } from "@/components/layout/PageShell";
 import { ProviderCard } from "@/components/ai-usage/ProviderCard";
 import { UsageChart } from "@/components/ai-usage/UsageChart";
 import { CostChart } from "@/components/ai-usage/CostChart";
+import { CostBreakdown } from "@/components/ai-usage/CostBreakdown";
 import { TokenSummary } from "@/components/ai-usage/TokenSummary";
 import { Card } from "@/components/ui/Card";
 import { CardSkeleton } from "@/components/ui/Skeleton";
@@ -158,6 +159,7 @@ export default function AIUsagePage() {
             {anthropic.data && !anthropic.data.error && (
               <>
                 <TokenSummary data={anthropic.data.dailyUsage} days={daysDiff} totalCost={anthropic.data.totalCost} />
+                <CostBreakdown costByModel={anthropic.data.costByModel} costByWorkspace={anthropic.data.costByWorkspace} />
                 <div className="mt-4 space-y-4">
                   <CostChart data={anthropic.data.dailyUsage} />
                   <UsageChart

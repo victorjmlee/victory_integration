@@ -24,6 +24,8 @@ export interface AnthropicUsageResponse {
   dailyUsage: DailyUsage[];
   totalTokens: number;
   totalCost: number;
+  costByModel?: { model: string; cost: number }[];
+  costByWorkspace?: { workspace: string; cost: number }[];
   error?: string;
 }
 

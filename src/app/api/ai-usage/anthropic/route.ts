@@ -18,6 +18,22 @@ interface CostBucket {
   results: Array<{ amount: string }>;
 }
 
+interface GroupedCostResult {
+  amount: string;
+  description?: string;
+  workspace_id?: string | null;
+}
+
+interface GroupedCostBucket {
+  starting_at: string;
+  results: GroupedCostResult[];
+}
+
+interface Workspace {
+  id: string;
+  name: string;
+}
+
 // Pricing per million tokens (USD)
 const MODEL_PRICING: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }> = {
   "claude-opus-4-6": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
@@ -112,7 +128,7 @@ export async function GET(request: NextRequest) {
     const recentStartISO = `${formatDate(recentStart)}T00:00:00Z`;
     const recentEndISO = `${formatDate(new Date(endDate.getTime() + 86400000))}T00:00:00Z`;
 
-    const [usageRes, costRes, hourlyRes] = await Promise.all([
+    const [usageRes, costRes, hourlyRes, groupedCostRes, workspacesRes] = await Promise.all([
       // Usage report grouped by model for per-model token breakdown
       fetch(
         `https://api.anthropic.com/v1/organizations/usage_report/messages?starting_at=${startISO}&ending_at=${endISO}&bucket_width=1d&limit=31&group_by[]=model`,
@@ -126,6 +142,16 @@ export async function GET(request: NextRequest) {
       // Hourly usage for recent days to fill gaps from API reporting delay
       fetch(
         `https://api.anthropic.com/v1/organizations/usage_report/messages?starting_at=${recentStartISO}&ending_at=${recentEndISO}&bucket_width=1h&limit=${recentDays * 24}&group_by[]=model`,
+        { headers }
+      ),
+      // Cost report grouped by model + workspace for breakdown summaries
+      fetch(
+        `https://api.anthropic.com/v1/organizations/cost_report?starting_at=${startISO}&ending_at=${endISO}&bucket_width=1d&limit=31&group_by[]=description&group_by[]=workspace_id`,
+        { headers }
+      ),
+      // Workspace list for name mapping
+      fetch(
+        `https://api.anthropic.com/v1/organizations/workspaces?limit=100`,
         { headers }
       ),
     ]);
@@ -226,7 +252,47 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    return NextResponse.json({ dailyUsage, totalTokens, totalCost });
+    // Build cost-by-model and cost-by-workspace from the grouped cost report
+    let costByModel: { model: string; cost: number }[] = [];
+    let costByWorkspace: { workspace: string; cost: number }[] = [];
+
+    if (groupedCostRes?.ok) {
+      // Parse workspace name mapping
+      const workspaceNames = new Map<string, string>();
+      if (workspacesRes?.ok) {
+        const wsData = await workspacesRes.json();
+        for (const ws of (wsData.data ?? []) as Workspace[]) {
+          workspaceNames.set(ws.id, ws.name);
+        }
+      }
+
+      const groupedData = await groupedCostRes.json();
+      const modelTotals = new Map<string, number>();
+      const workspaceTotals = new Map<string, number>();
+
+      for (const bucket of (groupedData.data ?? []) as GroupedCostBucket[]) {
+        for (const r of bucket.results ?? []) {
+          const amount = parseFloat(r.amount ?? "0") / 100; // cents → dollars
+          if (r.description) {
+            const name = friendlyModelName(r.description);
+            modelTotals.set(name, (modelTotals.get(name) ?? 0) + amount);
+          }
+          const wsName = r.workspace_id
+            ? (workspaceNames.get(r.workspace_id) ?? r.workspace_id)
+            : "Default";
+          workspaceTotals.set(wsName, (workspaceTotals.get(wsName) ?? 0) + amount);
+        }
+      }
+
+      costByModel = Array.from(modelTotals.entries())
+        .map(([model, cost]) => ({ model, cost }))
+        .sort((a, b) => b.cost - a.cost);
+      costByWorkspace = Array.from(workspaceTotals.entries())
+        .map(([workspace, cost]) => ({ workspace, cost }))
+        .sort((a, b) => b.cost - a.cost);
+    }
+
+    return NextResponse.json({ dailyUsage, totalTokens, totalCost, costByModel, costByWorkspace });
   } catch (err) {
     return NextResponse.json(
       { dailyUsage: [], totalTokens: 0, totalCost: 0, error: `Failed to fetch: ${(err as Error).message}` },
