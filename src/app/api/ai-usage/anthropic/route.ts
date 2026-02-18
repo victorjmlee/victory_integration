@@ -1,11 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 
-interface CostResult {
-  amount: string;
-  model: string | null;
-  description: string | null;
-}
-
 interface UsageResult {
   uncached_input_tokens?: number;
   output_tokens?: number;
@@ -17,6 +11,11 @@ interface UsageResult {
 interface UsageBucket {
   starting_at: string;
   results: UsageResult[];
+}
+
+interface CostBucket {
+  starting_at: string;
+  results: Array<{ amount: string }>;
 }
 
 // Pricing per million tokens (USD)
@@ -36,29 +35,22 @@ function matchPricing(modelId: string): { input: number; output: number; cacheRe
   return { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }; // default to sonnet pricing
 }
 
-interface TokenBreakdown {
-  uncachedInput: number;
-  cacheRead: number;
-  cacheWrite: number;
-  output: number;
-}
-
-function estimateCostDetailed(modelId: string, tokens: TokenBreakdown): number {
-  const pricing = matchPricing(modelId);
+function estimateCostForResult(r: UsageResult): number {
+  if (!r.model) return 0;
+  const pricing = matchPricing(r.model);
+  const uncachedIn = r.uncached_input_tokens ?? 0;
+  const cacheRead = r.cache_read_input_tokens ?? 0;
+  const cacheWrite = (r.cache_creation?.ephemeral_1h_input_tokens ?? 0) + (r.cache_creation?.ephemeral_5m_input_tokens ?? 0);
+  const output = r.output_tokens ?? 0;
   return (
-    tokens.uncachedInput * pricing.input +
-    tokens.cacheRead * pricing.cacheRead +
-    tokens.cacheWrite * pricing.cacheWrite +
-    tokens.output * pricing.output
+    uncachedIn * pricing.input +
+    cacheRead * pricing.cacheRead +
+    cacheWrite * pricing.cacheWrite +
+    output * pricing.output
   ) / 1_000_000;
 }
 
-function friendlyModelName(model: string | null, description: string | null): string {
-  if (description) {
-    const match = description.match(/^(Claude .+?) Usage/);
-    if (match) return match[1];
-  }
-  if (!model) return "Unknown";
+function friendlyModelName(model: string): string {
   if (model.includes("opus-4-6")) return "Claude Opus 4.6";
   if (model.includes("opus-4")) return "Claude Opus 4";
   if (model.includes("sonnet-4-5")) return "Claude Sonnet 4.5";
@@ -69,15 +61,18 @@ function friendlyModelName(model: string | null, description: string | null): st
   return model;
 }
 
-function sumBucketTokens(results: UsageResult[]): { inputTokens: number; outputTokens: number } {
-  let inputTokens = 0;
-  let outputTokens = 0;
+/** Estimate per-model costs from token usage, then scale so they sum to actualTotal. */
+function buildModelCosts(results: UsageResult[], actualTotal: number): { model: string; cost: number }[] {
+  const estimatedByModel = new Map<string, number>();
   for (const r of results) {
-    inputTokens += (r.uncached_input_tokens ?? 0) + (r.cache_read_input_tokens ?? 0)
-      + (r.cache_creation?.ephemeral_1h_input_tokens ?? 0) + (r.cache_creation?.ephemeral_5m_input_tokens ?? 0);
-    outputTokens += r.output_tokens ?? 0;
+    if (!r.model) continue;
+    const name = friendlyModelName(r.model);
+    const est = estimateCostForResult(r);
+    estimatedByModel.set(name, (estimatedByModel.get(name) ?? 0) + est);
   }
-  return { inputTokens, outputTokens };
+  const estimatedTotal = Array.from(estimatedByModel.values()).reduce((s, v) => s + v, 0);
+  const scale = estimatedTotal > 0 ? actualTotal / estimatedTotal : 0;
+  return Array.from(estimatedByModel.entries()).map(([model, est]) => ({ model, cost: est * scale }));
 }
 
 export async function GET(request: NextRequest) {
@@ -111,12 +106,14 @@ export async function GET(request: NextRequest) {
     const headers = { "x-api-key": apiKey, "anthropic-version": "2023-06-01" };
 
     const fetches: Promise<Response>[] = [
+      // Usage report grouped by model for per-model token breakdown
       fetch(
-        `https://api.anthropic.com/v1/organizations/usage_report/messages?starting_at=${startISO}&ending_at=${endISO}&bucket_width=1d&limit=31`,
+        `https://api.anthropic.com/v1/organizations/usage_report/messages?starting_at=${startISO}&ending_at=${endISO}&bucket_width=1d&limit=31&group_by[]=model`,
         { headers }
       ),
+      // Cost report WITHOUT group_by for accurate totals
       fetch(
-        `https://api.anthropic.com/v1/organizations/cost_report?starting_at=${startISO}&ending_at=${endISO}&bucket_width=1d&limit=31&group_by[]=description`,
+        `https://api.anthropic.com/v1/organizations/cost_report?starting_at=${startISO}&ending_at=${endISO}&bucket_width=1d&limit=31`,
         { headers }
       ),
     ];
@@ -150,87 +147,75 @@ export async function GET(request: NextRequest) {
     const usageData = await usageRes.json();
     const usageBuckets: UsageBucket[] = usageData.data ?? [];
 
+    // Build cost map by date - no group_by so each bucket has one result with the total
+    const costMap = new Map<string, number>();
+    if (costRes.ok) {
+      const costData = await costRes.json();
+      for (const bucket of (costData.data ?? []) as CostBucket[]) {
+        const date = bucket.starting_at?.split("T")[0] ?? "";
+        let dayCost = 0;
+        for (const r of bucket.results ?? []) {
+          dayCost += parseFloat(r.amount ?? "0") / 100;
+        }
+        costMap.set(date, (costMap.get(date) ?? 0) + dayCost);
+      }
+    }
+
     // Check if today is already in the daily buckets
     const hasTodayInDaily = usageBuckets.some((b) => b.starting_at?.split("T")[0] === todayStr);
 
     // Aggregate today's hourly data with per-model cost estimates
-    let todayAggregated: { inputTokens: number; outputTokens: number; estimatedCost: number; modelCosts: Map<string, number> } | null = null;
+    let todayAggregated: { inputTokens: number; outputTokens: number; estimatedCost: number; results: UsageResult[] } | null = null;
     if (rangeIncludesToday && !hasTodayInDaily && todayUsageRes?.ok) {
       const todayData = await todayUsageRes.json();
       const hourlyBuckets: UsageBucket[] = todayData.data ?? [];
       let inputTokens = 0;
       let outputTokens = 0;
       let estimatedCost = 0;
-      const modelCostsMap = new Map<string, number>();
+      const allResults: UsageResult[] = [];
       for (const bucket of hourlyBuckets) {
         for (const r of bucket.results ?? []) {
+          allResults.push(r);
           const uncachedIn = r.uncached_input_tokens ?? 0;
           const cacheReadIn = r.cache_read_input_tokens ?? 0;
           const cacheWriteIn = (r.cache_creation?.ephemeral_1h_input_tokens ?? 0) + (r.cache_creation?.ephemeral_5m_input_tokens ?? 0);
           const rOut = r.output_tokens ?? 0;
           inputTokens += uncachedIn + cacheReadIn + cacheWriteIn;
           outputTokens += rOut;
-          if (r.model) {
-            const cost = estimateCostDetailed(r.model, {
-              uncachedInput: uncachedIn,
-              cacheRead: cacheReadIn,
-              cacheWrite: cacheWriteIn,
-              output: rOut,
-            });
-            estimatedCost += cost;
-            const name = friendlyModelName(r.model, null);
-            modelCostsMap.set(name, (modelCostsMap.get(name) ?? 0) + cost);
-          }
+          estimatedCost += estimateCostForResult(r);
         }
       }
       if (inputTokens > 0 || outputTokens > 0) {
-        todayAggregated = { inputTokens, outputTokens, estimatedCost, modelCosts: modelCostsMap };
-      }
-    }
-
-    // Build cost map by date with per-model breakdown (amounts in cents)
-    const costMap = new Map<string, { total: number; models: Map<string, number> }>();
-    if (costRes.ok) {
-      const costData = await costRes.json();
-      for (const bucket of costData.data ?? []) {
-        const date = bucket.starting_at?.split("T")[0] ?? "";
-        const entry = costMap.get(date) ?? { total: 0, models: new Map<string, number>() };
-        for (const r of (bucket.results ?? []) as CostResult[]) {
-          const amountUsd = parseFloat(r.amount ?? "0") / 100;
-          const name = friendlyModelName(r.model, r.description);
-          entry.total += amountUsd;
-          entry.models.set(name, (entry.models.get(name) ?? 0) + amountUsd);
-        }
-        costMap.set(date, entry);
+        todayAggregated = { inputTokens, outputTokens, estimatedCost, results: allResults };
       }
     }
 
     let totalTokens = 0;
     let totalCost = 0;
     const dailyUsage: Array<{ date: string; inputTokens: number; outputTokens: number; totalTokens: number; cost: number; modelCosts: { model: string; cost: number }[]; estimated?: boolean }> = usageBuckets.map((bucket) => {
-      const { inputTokens, outputTokens } = sumBucketTokens(bucket.results ?? []);
+      let inputTokens = 0;
+      let outputTokens = 0;
+      for (const r of bucket.results ?? []) {
+        inputTokens += (r.uncached_input_tokens ?? 0) + (r.cache_read_input_tokens ?? 0)
+          + (r.cache_creation?.ephemeral_1h_input_tokens ?? 0) + (r.cache_creation?.ephemeral_5m_input_tokens ?? 0);
+        outputTokens += r.output_tokens ?? 0;
+      }
       const date = bucket.starting_at?.split("T")[0] ?? "";
-      const costEntry = costMap.get(date);
-      const cost = costEntry?.total ?? 0;
-      const modelCosts = costEntry
-        ? Array.from(costEntry.models.entries()).map(([model, c]) => ({ model, cost: c }))
-        : [];
+      const actualCost = costMap.get(date) ?? 0;
+      // Estimate per-model cost proportions from tokens, normalize to actual total
+      const modelCosts = buildModelCosts(bucket.results ?? [], actualCost);
       totalTokens += inputTokens + outputTokens;
-      totalCost += cost;
-      return { date, inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, cost, modelCosts };
+      totalCost += actualCost;
+      return { date, inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, cost: actualCost, modelCosts };
     });
 
     // Append today's aggregated hourly data if it wasn't in the daily response
     if (todayAggregated) {
-      // Use actual cost data if available, otherwise use estimated cost from token pricing
-      const costEntry = costMap.get(todayStr);
-      const cost = costEntry?.total ?? todayAggregated.estimatedCost;
-      const modelCosts = costEntry
-        ? Array.from(costEntry.models.entries()).map(([model, c]) => ({ model, cost: c }))
-        : Array.from(todayAggregated.modelCosts.entries()).map(([model, c]) => ({ model, cost: c }));
+      const actualCost = costMap.get(todayStr);
+      const cost = actualCost ?? todayAggregated.estimatedCost;
+      const modelCosts = buildModelCosts(todayAggregated.results, cost);
       totalTokens += todayAggregated.inputTokens + todayAggregated.outputTokens;
       totalCost += cost;
-      const hasCostFromApi = !!costMap.get(todayStr);
       dailyUsage.push({
         date: todayStr,
         inputTokens: todayAggregated.inputTokens,
@@ -238,7 +223,7 @@ export async function GET(request: NextRequest) {
         totalTokens: todayAggregated.inputTokens + todayAggregated.outputTokens,
         cost,
         modelCosts,
-        estimated: !hasCostFromApi,
+        estimated: actualCost == null,
       });
     }
 
