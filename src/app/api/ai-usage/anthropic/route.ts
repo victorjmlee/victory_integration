@@ -123,7 +123,8 @@ export async function GET(request: NextRequest) {
     const recentStartISO = `${formatDate(recentStart)}T00:00:00Z`;
     const recentEndISO = `${formatDate(new Date(endDate.getTime() + 86400000))}T00:00:00Z`;
 
-    const [usageRes, costRes, hourlyRes, workspacesRes] = await Promise.all([
+    // Batch API calls to avoid rate limits (admin API has low rate limits)
+    const [usageRes, costRes] = await Promise.all([
       // Usage report grouped by model for per-model token breakdown
       fetch(
         `https://api.anthropic.com/v1/organizations/usage_report/messages?starting_at=${startISO}&ending_at=${endISO}&bucket_width=1d&limit=31&group_by[]=model`,
@@ -134,6 +135,9 @@ export async function GET(request: NextRequest) {
         `https://api.anthropic.com/v1/organizations/cost_report?starting_at=${startISO}&ending_at=${endISO}&bucket_width=1d&limit=31&group_by[]=description&group_by[]=workspace_id`,
         { headers }
       ),
+    ]);
+
+    const [hourlyRes, workspacesRes] = await Promise.all([
       // Hourly usage for recent days to fill gaps from API reporting delay
       fetch(
         `https://api.anthropic.com/v1/organizations/usage_report/messages?starting_at=${recentStartISO}&ending_at=${recentEndISO}&bucket_width=1h&limit=${recentDays * 24}&group_by[]=model`,
