@@ -149,14 +149,21 @@ export async function GET(request: NextRequest) {
 
     // Build cost map by date - no group_by so each bucket has one result with the total
     const costMap = new Map<string, number>();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const _debugCost: { buckets: number; rawAmounts: any[]; rawTotal: number; dividedTotal: number } = { buckets: 0, rawAmounts: [], rawTotal: 0, dividedTotal: 0 };
     if (costRes.ok) {
       const costData = await costRes.json();
       for (const bucket of (costData.data ?? []) as CostBucket[]) {
+        _debugCost.buckets++;
         const date = bucket.starting_at?.split("T")[0] ?? "";
         let dayCost = 0;
         for (const r of bucket.results ?? []) {
-          dayCost += parseFloat(r.amount ?? "0") / 100;
+          const raw = parseFloat(r.amount ?? "0");
+          _debugCost.rawAmounts.push({ date, raw_amount: r.amount, parsed: raw });
+          _debugCost.rawTotal += raw;
+          dayCost += raw / 100;
         }
+        _debugCost.dividedTotal += dayCost;
         costMap.set(date, (costMap.get(date) ?? 0) + dayCost);
       }
     }
@@ -227,7 +234,7 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    return NextResponse.json({ dailyUsage, totalTokens, totalCost });
+    return NextResponse.json({ dailyUsage, totalTokens, totalCost, _debugCost });
   } catch (err) {
     return NextResponse.json(
       { dailyUsage: [], totalTokens: 0, totalCost: 0, error: `Failed to fetch: ${(err as Error).message}` },
