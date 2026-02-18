@@ -21,6 +21,7 @@ const MODEL_COLORS: Record<string, string> = {
   // Anthropic
   "Claude Opus 4.6": "#e07a5f",
   "Claude Opus 4": "#e07a5f",
+  "Claude Sonnet 4.6": "#f2b880",
   "Claude Sonnet 4.5": "#f2b880",
   "Claude Sonnet 4": "#e8a87c",
   "Claude Haiku 4.5": "#81b29a",

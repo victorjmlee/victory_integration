@@ -22,6 +22,7 @@ interface CostBucket {
 const MODEL_PRICING: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }> = {
   "claude-opus-4-6": { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
   "claude-opus-4": { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
+  "claude-sonnet-4-6": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   "claude-sonnet-4-5": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   "claude-sonnet-4": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   "claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
@@ -53,6 +54,7 @@ function estimateCostForResult(r: UsageResult): number {
 function friendlyModelName(model: string): string {
   if (model.includes("opus-4-6")) return "Claude Opus 4.6";
   if (model.includes("opus-4")) return "Claude Opus 4";
+  if (model.includes("sonnet-4-6")) return "Claude Sonnet 4.6";
   if (model.includes("sonnet-4-5")) return "Claude Sonnet 4.5";
   if (model.includes("sonnet-4")) return "Claude Sonnet 4";
   if (model.includes("haiku-4-5")) return "Claude Haiku 4.5";
@@ -96,16 +98,21 @@ export async function GET(request: NextRequest) {
     const endDateExclusive = new Date(endDate.getTime() + 2 * 86400000);
 
     const formatDate = (d: Date) => d.toISOString().split("T")[0];
-    const todayStr = formatDate(new Date());
-    const rangeIncludesToday = endDate >= new Date(todayStr);
+    const headers = { "x-api-key": apiKey, "anthropic-version": "2023-06-01" };
 
     const startISO = `${formatDate(startDate)}T00:00:00Z`;
     const endISO = `${formatDate(endDateExclusive)}T00:00:00Z`;
-    const todayStartISO = `${todayStr}T00:00:00Z`;
-    const tomorrowISO = `${formatDate(new Date(new Date(todayStr).getTime() + 86400000))}T00:00:00Z`;
-    const headers = { "x-api-key": apiKey, "anthropic-version": "2023-06-01" };
 
-    const fetches: Promise<Response>[] = [
+    // Fetch hourly data for the last 3 days to cover the ~1 day API reporting delay
+    const recentDays = 3;
+    const recentStart = new Date(Math.max(
+      startDate.getTime(),
+      endDate.getTime() - (recentDays - 1) * 86400000
+    ));
+    const recentStartISO = `${formatDate(recentStart)}T00:00:00Z`;
+    const recentEndISO = `${formatDate(new Date(endDate.getTime() + 86400000))}T00:00:00Z`;
+
+    const [usageRes, costRes, hourlyRes] = await Promise.all([
       // Usage report grouped by model for per-model token breakdown
       fetch(
         `https://api.anthropic.com/v1/organizations/usage_report/messages?starting_at=${startISO}&ending_at=${endISO}&bucket_width=1d&limit=31&group_by[]=model`,
@@ -116,19 +123,12 @@ export async function GET(request: NextRequest) {
         `https://api.anthropic.com/v1/organizations/cost_report?starting_at=${startISO}&ending_at=${endISO}&bucket_width=1d&limit=31`,
         { headers }
       ),
-    ];
-
-    // Fetch today's hourly usage grouped by model if the range includes today (daily buckets may not have it yet)
-    if (rangeIncludesToday) {
-      fetches.push(
-        fetch(
-          `https://api.anthropic.com/v1/organizations/usage_report/messages?starting_at=${todayStartISO}&ending_at=${tomorrowISO}&bucket_width=1h&limit=24&group_by[]=model`,
-          { headers }
-        )
-      );
-    }
-
-    const [usageRes, costRes, todayUsageRes] = await Promise.all(fetches);
+      // Hourly usage for recent days to fill gaps from API reporting delay
+      fetch(
+        `https://api.anthropic.com/v1/organizations/usage_report/messages?starting_at=${recentStartISO}&ending_at=${recentEndISO}&bucket_width=1h&limit=${recentDays * 24}&group_by[]=model`,
+        { headers }
+      ),
+    ]);
 
     if (!usageRes.ok) {
       const errorData = await usageRes.text();
@@ -161,32 +161,29 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // Check if today is already in the daily buckets
-    const hasTodayInDaily = usageBuckets.some((b) => b.starting_at?.split("T")[0] === todayStr);
-
-    // Aggregate today's hourly data with per-model cost estimates
-    let todayAggregated: { inputTokens: number; outputTokens: number; estimatedCost: number; results: UsageResult[] } | null = null;
-    if (rangeIncludesToday && !hasTodayInDaily && todayUsageRes?.ok) {
-      const todayData = await todayUsageRes.json();
-      const hourlyBuckets: UsageBucket[] = todayData.data ?? [];
-      let inputTokens = 0;
-      let outputTokens = 0;
-      let estimatedCost = 0;
-      const allResults: UsageResult[] = [];
-      for (const bucket of hourlyBuckets) {
+    // Group hourly data by date, skipping dates already covered by daily buckets
+    const dailyDates = new Set(usageBuckets.map((b) => b.starting_at?.split("T")[0] ?? ""));
+    const hourlyByDate = new Map<string, { inputTokens: number; outputTokens: number; estimatedCost: number; results: UsageResult[] }>();
+    if (hourlyRes?.ok) {
+      const hourlyData = await hourlyRes.json();
+      for (const bucket of (hourlyData.data ?? []) as UsageBucket[]) {
+        const date = bucket.starting_at?.split("T")[0] ?? "";
+        if (dailyDates.has(date)) continue;
+        let entry = hourlyByDate.get(date);
+        if (!entry) {
+          entry = { inputTokens: 0, outputTokens: 0, estimatedCost: 0, results: [] };
+          hourlyByDate.set(date, entry);
+        }
         for (const r of bucket.results ?? []) {
-          allResults.push(r);
+          entry.results.push(r);
           const uncachedIn = r.uncached_input_tokens ?? 0;
           const cacheReadIn = r.cache_read_input_tokens ?? 0;
           const cacheWriteIn = (r.cache_creation?.ephemeral_1h_input_tokens ?? 0) + (r.cache_creation?.ephemeral_5m_input_tokens ?? 0);
           const rOut = r.output_tokens ?? 0;
-          inputTokens += uncachedIn + cacheReadIn + cacheWriteIn;
-          outputTokens += rOut;
-          estimatedCost += estimateCostForResult(r);
+          entry.inputTokens += uncachedIn + cacheReadIn + cacheWriteIn;
+          entry.outputTokens += rOut;
+          entry.estimatedCost += estimateCostForResult(r);
         }
-      }
-      if (inputTokens > 0 || outputTokens > 0) {
-        todayAggregated = { inputTokens, outputTokens, estimatedCost, results: allResults };
       }
     }
 
@@ -209,18 +206,19 @@ export async function GET(request: NextRequest) {
       return { date, inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, cost: actualCost, modelCosts };
     });
 
-    // Append today's aggregated hourly data if it wasn't in the daily response
-    if (todayAggregated) {
-      const actualCost = costMap.get(todayStr);
-      const cost = actualCost ?? todayAggregated.estimatedCost;
-      const modelCosts = buildModelCosts(todayAggregated.results, cost);
-      totalTokens += todayAggregated.inputTokens + todayAggregated.outputTokens;
+    // Append dates that were missing from daily buckets but available in hourly data
+    for (const [date, agg] of Array.from(hourlyByDate.entries()).sort()) {
+      if (agg.inputTokens === 0 && agg.outputTokens === 0) continue;
+      const actualCost = costMap.get(date);
+      const cost = actualCost ?? agg.estimatedCost;
+      const modelCosts = buildModelCosts(agg.results, cost);
+      totalTokens += agg.inputTokens + agg.outputTokens;
       totalCost += cost;
       dailyUsage.push({
-        date: todayStr,
-        inputTokens: todayAggregated.inputTokens,
-        outputTokens: todayAggregated.outputTokens,
-        totalTokens: todayAggregated.inputTokens + todayAggregated.outputTokens,
+        date,
+        inputTokens: agg.inputTokens,
+        outputTokens: agg.outputTokens,
+        totalTokens: agg.inputTokens + agg.outputTokens,
         cost,
         modelCosts,
         estimated: actualCost == null,
