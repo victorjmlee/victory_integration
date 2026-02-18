@@ -20,25 +20,37 @@ interface UsageBucket {
 }
 
 // Pricing per million tokens (USD)
-const MODEL_PRICING: Record<string, { input: number; output: number }> = {
-  "claude-opus-4-6": { input: 15, output: 75 },
-  "claude-opus-4": { input: 15, output: 75 },
-  "claude-sonnet-4-5": { input: 3, output: 15 },
-  "claude-sonnet-4": { input: 3, output: 15 },
-  "claude-haiku-4-5": { input: 0.8, output: 4 },
-  "claude-3-haiku": { input: 0.25, output: 1.25 },
+const MODEL_PRICING: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }> = {
+  "claude-opus-4-6": { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
+  "claude-opus-4": { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
+  "claude-sonnet-4-5": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+  "claude-sonnet-4": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+  "claude-haiku-4-5": { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 },
+  "claude-3-haiku": { input: 0.25, output: 1.25, cacheRead: 0.03, cacheWrite: 0.3 },
 };
 
-function matchPricing(modelId: string): { input: number; output: number } {
+function matchPricing(modelId: string): { input: number; output: number; cacheRead: number; cacheWrite: number } {
   for (const [key, pricing] of Object.entries(MODEL_PRICING)) {
     if (modelId.includes(key)) return pricing;
   }
-  return { input: 3, output: 15 }; // default to sonnet pricing
+  return { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }; // default to sonnet pricing
 }
 
-function estimateCost(modelId: string, inputTokens: number, outputTokens: number): number {
+interface TokenBreakdown {
+  uncachedInput: number;
+  cacheRead: number;
+  cacheWrite: number;
+  output: number;
+}
+
+function estimateCostDetailed(modelId: string, tokens: TokenBreakdown): number {
   const pricing = matchPricing(modelId);
-  return (inputTokens * pricing.input + outputTokens * pricing.output) / 1_000_000;
+  return (
+    tokens.uncachedInput * pricing.input +
+    tokens.cacheRead * pricing.cacheRead +
+    tokens.cacheWrite * pricing.cacheWrite +
+    tokens.output * pricing.output
+  ) / 1_000_000;
 }
 
 function friendlyModelName(model: string | null, description: string | null): string {
@@ -151,13 +163,19 @@ export async function GET(request: NextRequest) {
       const modelCostsMap = new Map<string, number>();
       for (const bucket of hourlyBuckets) {
         for (const r of bucket.results ?? []) {
-          const rIn = (r.uncached_input_tokens ?? 0) + (r.cache_read_input_tokens ?? 0)
-            + (r.cache_creation?.ephemeral_1h_input_tokens ?? 0) + (r.cache_creation?.ephemeral_5m_input_tokens ?? 0);
+          const uncachedIn = r.uncached_input_tokens ?? 0;
+          const cacheReadIn = r.cache_read_input_tokens ?? 0;
+          const cacheWriteIn = (r.cache_creation?.ephemeral_1h_input_tokens ?? 0) + (r.cache_creation?.ephemeral_5m_input_tokens ?? 0);
           const rOut = r.output_tokens ?? 0;
-          inputTokens += rIn;
+          inputTokens += uncachedIn + cacheReadIn + cacheWriteIn;
           outputTokens += rOut;
           if (r.model) {
-            const cost = estimateCost(r.model, rIn, rOut);
+            const cost = estimateCostDetailed(r.model, {
+              uncachedInput: uncachedIn,
+              cacheRead: cacheReadIn,
+              cacheWrite: cacheWriteIn,
+              output: rOut,
+            });
             estimatedCost += cost;
             const name = friendlyModelName(r.model, null);
             modelCostsMap.set(name, (modelCostsMap.get(name) ?? 0) + cost);
