@@ -267,21 +267,24 @@ export async function GET(request: NextRequest) {
       }
 
       const groupedData = await groupedCostRes.json();
+      const allResults: GroupedCostResult[] = [];
+      for (const bucket of (groupedData.data ?? []) as GroupedCostBucket[]) {
+        for (const r of bucket.results ?? []) allResults.push(r);
+      }
+
       const modelTotals = new Map<string, number>();
       const workspaceTotals = new Map<string, number>();
 
-      for (const bucket of (groupedData.data ?? []) as GroupedCostBucket[]) {
-        for (const r of bucket.results ?? []) {
-          const amount = parseFloat(r.amount ?? "0") / 100; // cents → dollars
-          if (r.description) {
-            const name = friendlyModelName(r.description);
-            modelTotals.set(name, (modelTotals.get(name) ?? 0) + amount);
-          }
-          const wsName = r.workspace_id
-            ? (workspaceNames.get(r.workspace_id) ?? r.workspace_id)
-            : "Default";
-          workspaceTotals.set(wsName, (workspaceTotals.get(wsName) ?? 0) + amount);
+      for (const r of allResults) {
+        const amount = parseFloat(r.amount ?? "0") / 100; // cents → dollars
+        if (r.description) {
+          const name = friendlyModelName(r.description);
+          modelTotals.set(name, (modelTotals.get(name) ?? 0) + amount);
         }
+        const wsName = r.workspace_id
+          ? (workspaceNames.get(r.workspace_id) ?? r.workspace_id)
+          : "Default";
+        workspaceTotals.set(wsName, (workspaceTotals.get(wsName) ?? 0) + amount);
       }
 
       costByModel = Array.from(modelTotals.entries())
