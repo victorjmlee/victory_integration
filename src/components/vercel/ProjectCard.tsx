@@ -12,12 +12,17 @@ export function ProjectCard({ project }: ProjectCardProps) {
     <Card hover>
       <div className="flex items-start justify-between">
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
+          <a
+            href={`https://vercel.com/~/projects/${project.name}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-2 hover:underline"
+          >
             <h3 className="truncate text-sm font-semibold text-zinc-100">
               {project.name}
             </h3>
             <ExternalLink size={12} className="shrink-0 text-zinc-500" />
-          </div>
+          </a>
           {project.framework && (
             <p className="mt-1 text-xs text-zinc-400">{project.framework}</p>
           )}
