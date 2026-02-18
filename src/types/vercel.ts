@@ -9,6 +9,7 @@ export interface VercelProject {
   }>;
   updatedAt: number;
   createdAt: number;
+  productionUrl?: string;
 }
 
 export interface VercelDeployment {

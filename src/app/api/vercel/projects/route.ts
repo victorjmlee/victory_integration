@@ -26,7 +26,19 @@ export async function GET() {
     }
 
     const data = await res.json();
-    return NextResponse.json({ projects: data.projects ?? [] });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const projects = (data.projects ?? []).map((p: any) => ({
+      id: p.id,
+      name: p.name,
+      framework: p.framework ?? null,
+      latestDeployments: p.latestDeployments,
+      updatedAt: p.updatedAt,
+      createdAt: p.createdAt,
+      productionUrl: p.targets?.production?.alias?.[0]
+        ?? p.alias?.[0]?.domain
+        ?? (p.name ? `${p.name}.vercel.app` : undefined),
+    }));
+    return NextResponse.json({ projects });
   } catch (err) {
     return NextResponse.json(
       { projects: [], error: `Failed to fetch: ${(err as Error).message}` },

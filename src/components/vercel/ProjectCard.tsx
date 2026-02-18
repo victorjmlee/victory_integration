@@ -13,7 +13,7 @@ export function ProjectCard({ project }: ProjectCardProps) {
       <div className="flex items-start justify-between">
         <div className="min-w-0 flex-1">
           <a
-            href={`https://vercel.com/~/projects/${project.name}`}
+            href={project.productionUrl ? `https://${project.productionUrl}` : undefined}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-2 hover:underline"
