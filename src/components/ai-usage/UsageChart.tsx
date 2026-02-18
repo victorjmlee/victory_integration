@@ -33,8 +33,8 @@ export function UsageChart({ title, data, color }: UsageChartProps) {
   }
 
   const formatDateLabel = (date: string) => {
-    const d = new Date(date);
-    return `${d.getMonth() + 1}/${d.getDate()}`;
+    const [, m, d] = date.split("-").map(Number);
+    return `${m}/${d}`;
   };
 
   return (
@@ -62,11 +62,14 @@ export function UsageChart({ title, data, color }: UsageChartProps) {
               fontSize: "12px",
             }}
             labelStyle={{ color: "#a1a1aa" }}
-            formatter={(value, name) => [
-              formatNumber(value as number),
+            formatter={(value: number, name: string) => [
+              formatNumber(value),
               name === "inputTokens" ? "Input" : "Output",
             ]}
-            labelFormatter={(label) => `Date: ${label}`}
+            labelFormatter={(label) => {
+              const [, m, d] = String(label).split("-").map(Number);
+              return `Date: ${m}/${d}`;
+            }}
           />
           <Legend
             formatter={(value: string) =>

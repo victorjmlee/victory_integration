@@ -1,20 +1,29 @@
+export interface ModelCost {
+  model: string;
+  cost: number;
+}
+
 export interface DailyUsage {
   date: string;
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
   cost?: number;
+  modelCosts?: ModelCost[];
+  estimated?: boolean;
 }
 
 export interface OpenAIUsageResponse {
   dailyUsage: DailyUsage[];
   totalTokens: number;
+  totalCost: number;
   error?: string;
 }
 
 export interface AnthropicUsageResponse {
   dailyUsage: DailyUsage[];
   totalTokens: number;
+  totalCost: number;
   error?: string;
 }
 
