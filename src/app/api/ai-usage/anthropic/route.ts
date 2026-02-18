@@ -13,20 +13,15 @@ interface UsageBucket {
   results: UsageResult[];
 }
 
-interface CostBucket {
-  starting_at: string;
-  results: Array<{ amount: string }>;
-}
-
-interface GroupedCostResult {
+interface CostResult {
   amount: string;
   description?: string;
   workspace_id?: string | null;
 }
 
-interface GroupedCostBucket {
+interface CostBucket {
   starting_at: string;
-  results: GroupedCostResult[];
+  results: CostResult[];
 }
 
 interface Workspace {
@@ -128,25 +123,20 @@ export async function GET(request: NextRequest) {
     const recentStartISO = `${formatDate(recentStart)}T00:00:00Z`;
     const recentEndISO = `${formatDate(new Date(endDate.getTime() + 86400000))}T00:00:00Z`;
 
-    const [usageRes, costRes, hourlyRes, groupedCostRes, workspacesRes] = await Promise.all([
+    const [usageRes, costRes, hourlyRes, workspacesRes] = await Promise.all([
       // Usage report grouped by model for per-model token breakdown
       fetch(
         `https://api.anthropic.com/v1/organizations/usage_report/messages?starting_at=${startISO}&ending_at=${endISO}&bucket_width=1d&limit=31&group_by[]=model`,
         { headers }
       ),
-      // Cost report WITHOUT group_by for accurate totals
+      // Cost report grouped by model + workspace — used for both per-day totals and breakdown summaries
       fetch(
-        `https://api.anthropic.com/v1/organizations/cost_report?starting_at=${startISO}&ending_at=${endISO}&bucket_width=1d&limit=31`,
+        `https://api.anthropic.com/v1/organizations/cost_report?starting_at=${startISO}&ending_at=${endISO}&bucket_width=1d&limit=31&group_by[]=description&group_by[]=workspace_id`,
         { headers }
       ),
       // Hourly usage for recent days to fill gaps from API reporting delay
       fetch(
         `https://api.anthropic.com/v1/organizations/usage_report/messages?starting_at=${recentStartISO}&ending_at=${recentEndISO}&bucket_width=1h&limit=${recentDays * 24}&group_by[]=model`,
-        { headers }
-      ),
-      // Cost report grouped by model + workspace for breakdown summaries
-      fetch(
-        `https://api.anthropic.com/v1/organizations/cost_report?starting_at=${startISO}&ending_at=${endISO}&bucket_width=1d&limit=31&group_by[]=description&group_by[]=workspace_id`,
         { headers }
       ),
       // Workspace list for name mapping
@@ -173,8 +163,18 @@ export async function GET(request: NextRequest) {
     const usageData = await usageRes.json();
     const usageBuckets: UsageBucket[] = usageData.data ?? [];
 
-    // Build cost map by date - no group_by so each bucket has one result with the total
+    // Parse cost report (grouped by description + workspace) and workspace names
     const costMap = new Map<string, number>();
+    const workspaceNames = new Map<string, string>();
+    const allCostResults: CostResult[] = [];
+
+    if (workspacesRes?.ok) {
+      const wsData = await workspacesRes.json();
+      for (const ws of (wsData.data ?? []) as Workspace[]) {
+        workspaceNames.set(ws.id, ws.name);
+      }
+    }
+
     if (costRes.ok) {
       const costData = await costRes.json();
       for (const bucket of (costData.data ?? []) as CostBucket[]) {
@@ -182,6 +182,7 @@ export async function GET(request: NextRequest) {
         let dayCost = 0;
         for (const r of bucket.results ?? []) {
           dayCost += parseFloat(r.amount ?? "0") / 100;
+          allCostResults.push(r);
         }
         costMap.set(date, (costMap.get(date) ?? 0) + dayCost);
       }
@@ -252,48 +253,28 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // Build cost-by-model and cost-by-workspace from the grouped cost report
-    let costByModel: { model: string; cost: number }[] = [];
-    let costByWorkspace: { workspace: string; cost: number }[] = [];
+    // Build cost-by-model and cost-by-workspace from the grouped cost results
+    const modelTotals = new Map<string, number>();
+    const workspaceTotals = new Map<string, number>();
 
-    if (groupedCostRes?.ok) {
-      // Parse workspace name mapping
-      const workspaceNames = new Map<string, string>();
-      if (workspacesRes?.ok) {
-        const wsData = await workspacesRes.json();
-        for (const ws of (wsData.data ?? []) as Workspace[]) {
-          workspaceNames.set(ws.id, ws.name);
-        }
+    for (const r of allCostResults) {
+      const amount = parseFloat(r.amount ?? "0") / 100; // cents → dollars
+      if (r.description) {
+        const name = friendlyModelName(r.description);
+        modelTotals.set(name, (modelTotals.get(name) ?? 0) + amount);
       }
-
-      const groupedData = await groupedCostRes.json();
-      const allResults: GroupedCostResult[] = [];
-      for (const bucket of (groupedData.data ?? []) as GroupedCostBucket[]) {
-        for (const r of bucket.results ?? []) allResults.push(r);
-      }
-
-      const modelTotals = new Map<string, number>();
-      const workspaceTotals = new Map<string, number>();
-
-      for (const r of allResults) {
-        const amount = parseFloat(r.amount ?? "0") / 100; // cents → dollars
-        if (r.description) {
-          const name = friendlyModelName(r.description);
-          modelTotals.set(name, (modelTotals.get(name) ?? 0) + amount);
-        }
-        const wsName = r.workspace_id
-          ? (workspaceNames.get(r.workspace_id) ?? r.workspace_id)
-          : "Default";
-        workspaceTotals.set(wsName, (workspaceTotals.get(wsName) ?? 0) + amount);
-      }
-
-      costByModel = Array.from(modelTotals.entries())
-        .map(([model, cost]) => ({ model, cost }))
-        .sort((a, b) => b.cost - a.cost);
-      costByWorkspace = Array.from(workspaceTotals.entries())
-        .map(([workspace, cost]) => ({ workspace, cost }))
-        .sort((a, b) => b.cost - a.cost);
+      const wsName = r.workspace_id
+        ? (workspaceNames.get(r.workspace_id) ?? r.workspace_id)
+        : "Default";
+      workspaceTotals.set(wsName, (workspaceTotals.get(wsName) ?? 0) + amount);
     }
+
+    const costByModel = Array.from(modelTotals.entries())
+      .map(([model, cost]) => ({ model, cost }))
+      .sort((a, b) => b.cost - a.cost);
+    const costByWorkspace = Array.from(workspaceTotals.entries())
+      .map(([workspace, cost]) => ({ workspace, cost }))
+      .sort((a, b) => b.cost - a.cost);
 
     return NextResponse.json({ dailyUsage, totalTokens, totalCost, costByModel, costByWorkspace });
   } catch (err) {
